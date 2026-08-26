@@ -11,8 +11,7 @@ pilot energy and the *same* payload, and measures both at once. Two Ettus B210
 software-defined radios, MATLAB, an antenna link, and a picture of a dog.
 
 This code was written by **Dr. (Eric) Hyeon Seok Rou** together with **Chloe (Claude
-Code)**, the Claude Code research persona used throughout the project. The
-background and the demo write-up are in the accompanying LinkedIn post:
+Code)**. The background and the demo write-up are in the accompanying LinkedIn post:
 <https://lnkd.in/p/eNBjKiNc>. More of the first author's work:
 [erichsrou.com](https://www.erichsrou.com) ·
 [Google Scholar](https://scholar.google.com/citations?user=OH-Lkn4AAAAJ&hl=en).
