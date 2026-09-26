@@ -37,7 +37,8 @@
 %
 %  DEPENDENCIES:
 %    src/twopc_frame_contract.m, combofdm_rx, stage5_afdm_rx, bits2img420,
-%    src/x310_profile.m, src/usrp_scan.m, src/usrp_scan_ui.m, src/gain_ui.m
+%    src/rx_chansel.m, src/x310_profile.m, src/usrp_scan.m,
+%    src/usrp_scan_ui.m, src/gain_ui.m
 %    Communications Toolbox + USRP support package (comm.SDRuReceiver)
 % =========================================================================
 function out = RX_PC_MAIN(P)
@@ -90,6 +91,11 @@ nBits = numel(C.bits);
 band  = fOff + [-1 1]*(1+prms{1}.beta)*(fs/M)/2;
 pn    = C.pn;
 assert(mod(R.mcr, fs) == 0, 'master clock %g does not divide fs %g', R.mcr, fs);
+% Two free-running radios: resolve the STF's +-fs/(2 Ls) = +-6.25 kHz CFO
+% ambiguity over k = -2..2 (capture range +-31 kHz; the X310 pair measured
+% -7.5 kHz), and tell the receivers the channel-select filter's noise gain.
+[~, nbw] = rx_chansel(0, fs);
+for w = 1:2, prms{w}.cfoAmbig = 2;  prms{w}.noiseBW = nbw; end
 
 fprintf('[RX] === RX PC ready (%s): press Scan, close the window to stop ===\n', ...
     R.dboard);
@@ -239,6 +245,7 @@ while u < P.maxIter && ishandle(fig)
     if len == 0, nMiss = nMiss + 1; drawnow limitrate; continue; end
     peakY = max(abs(y));
     yd = y .* exp(-1j*2*pi*fOff*(0:numel(y)-1).'/fs);
+    yd = rx_chansel(yd, fs);                  % drop LO-leakage tones
 
     [ppc, ffc] = pwelch(y, hann(1024), 512, 4096, fs, 'centered');
     set(hSp,'XData',ffc/1e3,'YData',10*log10(ppc));

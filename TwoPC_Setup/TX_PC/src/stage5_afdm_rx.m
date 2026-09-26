@@ -62,6 +62,7 @@ iStart = max(1, iEnd - 2000);
 assert(iEnd - iStart > 400, 'no pre-burst noise window in capture');
 w      = y(iStart:iEnd);
 s2t    = median(abs(w).^2) / log(2);          % robust vs stray energy
+if isfield(prm, 'noiseBW'), s2t = s2t / prm.noiseBW; end   % rx_chansel
 sigma2 = s2t * (abs(g)^2 + abs(g2)^2) / ((abs(g)^2 - abs(g2)^2)^2 ...
          * ref.scale^2);
 sigma2 = max(sigma2, 1e-12);                  % noiseless sims -> ~ZF

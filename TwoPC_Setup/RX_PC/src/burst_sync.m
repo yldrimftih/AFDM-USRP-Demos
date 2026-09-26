@@ -83,22 +83,54 @@ if isfield(prm, 'useSTF') && prm.useSTF
     % lower-variance coarse estimate than the single peak
     Ppl  = sum(P(mS > 0.8*mPk));
     cfoC = prm.fs * angle(Ppl) / (2*pi*Ls);
+    % Ambiguity resolution (prm.cfoAmbig = K, default 0 = off): the S&C
+    % phase only gives eps modulo fs/Ls (12.5 kHz), but two free-running
+    % X310s at 2.4 GHz measured -7.5 kHz (3.1 ppm), which aliased to
+    % +5 kHz and broke every frame (hardware 2026-09-26). Try
+    % cfoC + k*fs/Ls, k = -K..K, and keep the one whose coherent ZC
+    % correlation is strongest -- a wrong k leaves ~17 turns of rotation
+    % across Lr and collapses it. Evaluated on short segments following
+    % EVERY plateau: both bursts carry the same STF, so the strongest
+    % plateau may belong to the other waveform, whose ZC root this r does
+    % not match.
+    if isfield(prm, 'cfoAmbig') && prm.cfoAmbig > 0
+        iPl = find(mS > 0.8*mPk);
+        iPl = iPl([true; diff(iPl) > 1]);        % first index of each plateau
+        cands = cfoC + (-prm.cfoAmbig:prm.cfoAmbig) * prm.fs/Ls;
+        best  = zeros(size(cands));
+        for p = 1:numel(iPl)
+            seg = max(1, iPl(p) - Lr) : min(N, iPl(p) + ref.nSTF*prm.M + 3*Lr);
+            if numel(seg) < Lr, continue; end
+            nS  = (seg - 1).';
+            for q = 1:numel(cands)
+                mc = max(zcMetric(y(seg) .* ...
+                    exp(-1j*2*pi*cands(q)*nS/prm.fs), r, Lr));
+                best(q) = max(best(q), mc);
+            end
+        end
+        [~, q] = max(best);
+        cfoC = cands(q);
+    end
     y    = y .* exp(-1j*2*pi*cfoC*(0:N-1).'/prm.fs);   % for steps 1-3 only
 end
 
 % 1. Cross-correlation r^* (*) y via convolution with conj(flip(r));
 %    c(tau) = sum_n r*[n] y[n+tau-1], tau = 1..N-Lr+1
-cFull = conv(y, conj(flipud(r)));
-c     = cFull(Lr:N);                          % valid part, tau = 1..N-Lr+1
-% moving capture energy over Lr-sample windows, same tau grid
-eWin  = movsum(abs(y).^2, [0 Lr-1]);
-eWin  = eWin(1:N-Lr+1);
-mCurve = abs(c) ./ sqrt(eWin * sum(abs(r).^2) + eps);
+mCurve = zcMetric(y, r, Lr);
 
 % 2. Peak -> timing + detection metric; fractional refinement by parabolic
 %    interpolation on the correlation magnitude (integer timing at M=4
 %    leaves up to T/8 ISI ~ 15% EVM — observed on hardware 2026-08-11)
-[m, t0] = max(mCurve);
+%    Only bursts whose whole frame fits in the capture are eligible: a
+%    capture often ends inside a later burst of the same waveform, whose
+%    intact preamble can out-peak the complete one and turn a decodable
+%    capture into a miss (X310 hardware 2026-09-26, ~1 capture in 6).
+mSel = mCurve;
+if isfield(ref, 'chipIdx')
+    tMax = N - (ref.chipIdx(end) + prm.gd + prm.M);
+    if tMax >= 1 && tMax < numel(mSel), mSel(tMax+1:end) = 0; end
+end
+[m, t0] = max(mSel);
 if t0 > 1 && t0 < numel(mCurve)
     a = mCurve(t0-1); b = mCurve(t0); c2 = mCurve(t0+1);
     dfrac = 0.5*(a - c2) / (a - 2*b + c2);    % peak at t0 + dfrac
@@ -138,4 +170,16 @@ if nargout > 6
     dbg = struct('mS', mS, 'mCurve', mCurve, 'cfoC', cfoC, 'cfoF', cfoF);
 end
 
+end
+
+function mCurve = zcMetric(y, r, Lr)
+% normalized cross-correlation r^* (*) y via convolution with conj(flip(r));
+% c(tau) = sum_n r*[n] y[n+tau-1], tau = 1..N-Lr+1
+N     = numel(y);
+cFull = conv(y, conj(flipud(r)));
+c     = cFull(Lr:N);                          % valid part
+% moving capture energy over Lr-sample windows, same tau grid
+eWin  = movsum(abs(y).^2, [0 Lr-1]);
+eWin  = eWin(1:N-Lr+1);
+mCurve = abs(c) ./ sqrt(eWin * sum(abs(r).^2) + eps);
 end
