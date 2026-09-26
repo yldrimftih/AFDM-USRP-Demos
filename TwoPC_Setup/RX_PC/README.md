@@ -48,7 +48,7 @@ again. Nothing needs to be restarted.
 | `channel` | 1 | 1 = slot A, 2 = slot B |
 | `ipAddress` | `''` | set only to skip the Scan button and connect directly |
 | `autoScan` | false | true: scan once as soon as the window opens |
-| `imgFile` | `'dog.jpg'` | must be identical on both PCs |
+| `imgFile` | `'ku.jpg'` | must be identical on both PCs |
 
 Every field can also be overridden per call, e.g.
 `RX_PC_MAIN(struct('rxGain',15))`.
@@ -56,7 +56,7 @@ Every field can also be overridden per call, e.g.
 ## Rules that matter
 
 * The two PCs never talk to each other. The receiver rebuilds the transmitted
-  payload locally from `src/twopc_frame_contract.m`, so **`src/` and `dog.jpg`
+  payload locally from `src/twopc_frame_contract.m`, so **`src/` and `ku.jpg`
   must be identical on both PCs**, as must `P.imgFile` and `P.fc`. If you
   change the image or anything in `src/`, change it on **both** sides.
 * Antenna link only, antennas **≥ 1 m apart** and never touching. Cable

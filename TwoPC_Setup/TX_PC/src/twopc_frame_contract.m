@@ -18,7 +18,7 @@
 %    sequence (seed 46) so transmit power does not depend on image content.
 %
 %  INPUTS:
-%    imgFile : image file name, default 'dog.jpg'. MUST be identical on
+%    imgFile : image file name, default 'ku.jpg'. MUST be identical on
 %              both PCs -- it defines the payload.
 %    imgDir  : folder holding the image, default = parent of src/
 %  OUTPUTS:
@@ -32,7 +32,7 @@
 % =========================================================================
 function C = twopc_frame_contract(imgFile, imgDir)
 
-if nargin < 1 || isempty(imgFile), imgFile = 'dog.jpg'; end
+if nargin < 1 || isempty(imgFile), imgFile = 'ku.jpg'; end
 if nargin < 2 || isempty(imgDir)
     imgDir = fileparts(fileparts(mfilename('fullpath')));
 end

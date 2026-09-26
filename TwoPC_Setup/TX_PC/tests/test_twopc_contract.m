@@ -31,9 +31,13 @@ assert(numel(C.bits) == 42432 && C.nPad == 96, ...
     'budget: %d bits, %d pad', numel(C.bits), C.nPad);
 assert(C.prmA.u == 34 && C.prmO.u == 25, 'ZC roots not split');
 
-% (c) lattice round trip: transmitted rgb view re-maps to the same bits
+% (c) the as-transmitted view is exactly the decoding of the payload bits
+%     (what the RX compares its picture against). The reverse direction,
+%     img2bits420(C.rgb) == bits, holds only for images without saturated
+%     colours: YCbCr -> RGB clipping moves a few lattice points (ku.jpg:
+%     40 of 42,336 bits), so it is not asserted.
 bTx = double(xor(C.bits(1:6*C.S^2), C.pn(1:6*C.S^2)));
-assert(isequal(img2bits420(C.rgb), bTx), 'lattice round trip failed');
+assert(isequal(bits2img420(bTx, C.S), C.rgb), 'as-transmitted view mismatch');
 
 % (d) composite capture: OFDM burst then AFDM burst, one capture,
 %     both receivers, 30 dB

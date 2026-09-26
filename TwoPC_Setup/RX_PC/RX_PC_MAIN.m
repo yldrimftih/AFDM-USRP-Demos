@@ -30,7 +30,7 @@
 %    P : optional overrides (defaults in the USER SETTINGS block below)
 %        .fc .rxGain .rxGainMin .rxGainMax .daughterboard .channel
 %        .ipAddress (skip the scan) .autoScan .scanIPs
-%        .imgFile ('dog.jpg', must match the TX PC) .maxIter (Inf)
+%        .imgFile ('ku.jpg', must match the TX PC) .maxIter (Inf)
 %        .snapshot (save a panel PNG on exit)
 %  OUTPUTS:
 %    out : struct -- per-waveform totals (.nOK .nMiss .errTot .bitTot)
@@ -57,7 +57,7 @@ def = struct( ...
     'ipAddress',     '', ...          % set only to skip the Scan button
     'autoScan',      false, ...       % true: scan once when the window opens
     'scanIPs',       {{'192.168.10.2','192.168.40.2','192.168.30.2'}}, ...
-    'imgFile',       'dog.jpg', ...   % must match the TX PC
+    'imgFile',       'ku.jpg', ...   % must match the TX PC
     'maxIter',       Inf, ...
     'snapshot',      []);
 %% ========================================================================

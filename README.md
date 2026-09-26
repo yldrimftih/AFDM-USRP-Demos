@@ -33,10 +33,10 @@ TwoPC_Setup/            transmitter and receiver on TWO separate PCs
                         (USRP X310 over Ethernet, radio found with a Scan button)
   TX_PC/                  copy this folder to the transmitting PC
     TX_PC_MAIN.m            transmitter entry point
-    SELFTEST.m, tests/, src/, dog.jpg
+    SELFTEST.m, tests/, src/, ku.jpg
   RX_PC/                  copy this folder to the receiving PC
     RX_PC_MAIN.m            receiver entry point
-    SELFTEST.m, tests/, src/, dog.jpg
+    SELFTEST.m, tests/, src/, ku.jpg
 ```
 
 Every folder is standalone: copy just that folder to a machine and it runs.
