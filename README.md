@@ -30,6 +30,7 @@ OnePC_Setup/            everything runs in ONE MATLAB session, two B210s on one 
   dog.jpg                 the transmitted image
 
 TwoPC_Setup/            transmitter and receiver on TWO separate PCs
+                        (USRP X310 over Ethernet, radio found with a Scan button)
   TX_PC/                  copy this folder to the transmitting PC
     TX_PC_MAIN.m            transmitter entry point
     SELFTEST.m, tests/, src/, dog.jpg
@@ -76,7 +77,7 @@ from **Home → Add-Ons → Get Hardware Support Packages**, searching for *USRP
 
 | What | Notes |
 |---|---|
-| Radios | 2 × Ettus **B210** on **USB 3.0** (both on one PC, or one per PC) |
+| Radios | `OnePC_Setup`: 2 × Ettus **B210** on **USB 3.0**. `TwoPC_Setup`: one Ettus **X310** (CBX-120 daughterboard by default) per PC, on **Ethernet** — see [TX_PC/README.md](TwoPC_Setup/TX_PC/README.md) for the one-time network setup |
 | Antennas | one whip per radio, **≥ 30 cm apart**, line of sight, never touching |
 | OS | Linux, macOS or Windows. On Linux run `sudo ./SETUP_UDEV.sh` once per PC, then re-plug the radio, so MATLAB can open it as a normal user |
 
@@ -114,10 +115,13 @@ such as `30ABCDE` — read the one printed for each of *your* radios.
 `RUN_IMAGE_DEMO.m` (or `RUN_PANEL_DEMO.m`), then Run. A window opens and keeps
 running until you close it.
 
-*Two PCs:* edit `P.txSerial` in `TX_PC/TX_PC_MAIN.m` on the transmitting PC and
-`P.rxSerial` in `RX_PC/RX_PC_MAIN.m` on the receiving PC. Start the transmitter
-first, then the receiver. There is **no network connection between the two
-PCs** — see *How the two-PC version measures BER* below.
+*Two PCs (X310):* nothing to edit. Run `TX_PC/TX_PC_MAIN.m` on the transmitting
+PC and `RX_PC/RX_PC_MAIN.m` on the receiving PC, and press **Scan** in each
+window. The X310 on that PC's Ethernet is found and connected automatically.
+Start the transmitter first, then the receiver. Gains, carrier and
+daughterboard are in the *USER SETTINGS* block at the top of each script.
+There is **no network connection between the two PCs** — see *How the two-PC
+version measures BER* below.
 
 **Close the figure window to stop.** The radios are released on exit.
 
@@ -147,11 +151,11 @@ Everything below is a one-line edit in the entry script (`RUN_*.m`,
 
 | Setting | Field | Notes |
 |---|---|---|
-| Radio serials | `P.txSerial`, `P.rxSerial` | **must be set**, from `findsdru` |
+| Radio serials | `P.txSerial`, `P.rxSerial` | one-PC version only: **must be set**, from `findsdru`. The two-PC X310 version uses the Scan button instead (or `P.ipAddress`) |
 | Transmitted image | `P.imgFile` | any file `imread` can open; it is centre-cropped, resampled and quantised automatically. In the two-PC version it **must be identical on both PCs** — it defines the payload |
 | Carrier frequency | `P.fc` | default 2.4 GHz |
-| Transmit gain | `P.txGain` | 40…80, also a live slider. Raise slowly and watch the clip canary |
-| Receive gain | `P.rxGain` | 20…76, also a live slider |
+| Transmit gain | `P.txGain` | B210: 40…80. X310: `P.txGainMin`…`P.txGainMax` (default 0…31.5 dB, CBX-120). Also a live slider. Raise slowly and watch the clip canary |
+| Receive gain | `P.rxGain` | B210: 20…76. X310: `P.rxGainMin`…`P.rxGainMax` (default 0…31.5 dB). Also a live slider |
 | Constellation | `P.modOrder` | panel demo only: 4 / 16 / 64-QAM, also a live popup. The image demo is fixed at 16-QAM because the pixel mapping is 4 bits per colour channel |
 | Block size / profile | `P.N`, `P.profile` | panel demo only: `256` with `'matched'` (the resource-matched comparison) or `64` with `'native'` (faster, each waveform in its own natural configuration) |
 

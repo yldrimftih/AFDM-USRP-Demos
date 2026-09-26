@@ -1,6 +1,7 @@
 %% =========================================================================
 %  FILE:     RX_PC_MAIN.m
 %  PROJECT:  PS-OFDM vs PS-AFDM live USRP demo  --  V1, 26 Aug 2026
+%            X310 port (Ethernet, network scan)
 %  AUTHORS:  Dr. Hyeon Seok Rou  |  Chloe (Claude Code)
 % --------------------------------------------------------------------------
 %  PURPOSE:
@@ -9,45 +10,73 @@
 %    and embedded-pilot PS-AFDM, per-symbol channel estimation on both) on
 %    every capture, and shows the receive panel: synchronisation tiles,
 %    spectrum, equalised constellations, per-symbol EVM, channel views,
-%    received images, EVM and CFO histories, running BER, an RX-gain
-%    slider and an ADC clip canary. CLOSE THE WINDOW TO STOP.
+%    received images, EVM and CFO histories, running BER, a live RX-gain
+%    control, an ADC clip canary and the radio-selection strip.
+%    CLOSE THE WINDOW TO STOP.
 %
 %    There is no link between the two PCs: the receiver rebuilds the
 %    transmitted payload locally from the deterministic contract, so the
 %    displayed BER is a true measurement.
 %
-%    >>> SET YOUR B210 SERIAL IN THE rxSerial LINE BELOW (findsdru) <<<
+%    >>> NO SERIAL / IP TO TYPE: press SCAN in the window. The X310 found
+%        on this PC's network is connected automatically (if several are
+%        found, pick one in the list and press Connect). <<<
 %
 %  SAFETY:
-%    Antenna link only, antennas >= 30 cm apart. Keep the clip canary
+%    Antenna link only, antennas >= 1 m apart. Keep the clip canary
 %    green: peak|y| < 0.7. If it goes red, lower RX gain (or TX gain).
 %
 %  INPUTS:
-%    P : optional overrides -- .rxSerial .fc (2.4e9) .rxGain (50)
+%    P : optional overrides (defaults in the USER SETTINGS block below)
+%        .fc .rxGain .rxGainMin .rxGainMax .daughterboard .channel
+%        .ipAddress (skip the scan) .autoScan .scanIPs
 %        .imgFile ('dog.jpg', must match the TX PC) .maxIter (Inf)
 %        .snapshot (save a panel PNG on exit)
 %  OUTPUTS:
 %    out : struct -- per-waveform totals (.nOK .nMiss .errTot .bitTot)
 %
 %  DEPENDENCIES:
-%    src/twopc_frame_contract.m, combofdm_rx, stage5_afdm_rx, bits2img420
+%    src/twopc_frame_contract.m, combofdm_rx, stage5_afdm_rx, bits2img420,
+%    src/x310_profile.m, src/usrp_scan.m, src/usrp_scan_ui.m, src/gain_ui.m
 %    Communications Toolbox + USRP support package (comm.SDRuReceiver)
 % =========================================================================
 function out = RX_PC_MAIN(P)
 
 addpath(fullfile(fileparts(mfilename('fullpath')), 'src'));
 if nargin < 1, P = struct(); end
-def = struct('rxSerial','YOUR_RX_B210_SERIAL', 'fc',2.4e9, 'rxGain',50, ...
-             'imgFile','dog.jpg', 'maxIter',Inf, 'snapshot',[]);
+
+%% ================= USER SETTINGS ========================================
+def = struct( ...
+    'fc',            2.4e9, ...       % carrier [Hz], must match the TX PC
+    'rxGain',        20, ...          % start RX gain [dB] (live control)
+    'rxGainMin',     [], ...          % control range [dB]; empty = the
+    'rxGainMax',     [], ...          %   daughterboard limit (0 / 31.5)
+    'daughterboard', 'CBX-120', ...   % 'CBX-120' | 'UBX-160' | 'SBX-120'
+    'channel',       1, ...           % 1 = daughterboard slot A, 2 = B
+    'ipAddress',     '', ...          % set only to skip the Scan button
+    'autoScan',      false, ...       % true: scan once when the window opens
+    'scanIPs',       {{'192.168.10.2','192.168.40.2','192.168.30.2'}}, ...
+    'imgFile',       'dog.jpg', ...   % must match the TX PC
+    'maxIter',       Inf, ...
+    'snapshot',      []);
+%% ========================================================================
 fn = fieldnames(def);
 for i = 1:numel(fn)
     if ~isfield(P, fn{i}) || isempty(P.(fn{i})), P.(fn{i}) = def.(fn{i}); end
 end
 if isempty(P.snapshot), P.snapshot = isfinite(P.maxIter); end
-assert(~contains(P.rxSerial,'YOUR_'), ['Set your B210 serial: edit the ' ...
-    'rxSerial default in RX_PC_MAIN.m, or call ' ...
-    'RX_PC_MAIN(struct(''rxSerial'',''XXXXXXX'')). Serials are listed by ' ...
-    'findsdru in MATLAB or uhd_find_devices in a terminal.']);
+
+R = x310_profile(P.daughterboard);
+if isempty(P.rxGainMin), P.rxGainMin = R.rxGain(1); end
+if isempty(P.rxGainMax), P.rxGainMax = R.rxGain(2); end
+gRange = [max(P.rxGainMin, R.rxGain(1)), min(P.rxGainMax, R.rxGain(2))];
+assert(gRange(2) > gRange(1), 'RX gain range [%g %g] is empty (%s: %g..%g dB)', ...
+    P.rxGainMin, P.rxGainMax, R.dboard, R.rxGain);
+assert(P.rxGain >= gRange(1) && P.rxGain <= gRange(2), ...
+    'rxGain %g dB outside the allowed range [%g %g] dB', P.rxGain, gRange);
+assert(P.fc >= R.fRange(1) && P.fc <= R.fRange(2), ...
+    'fc %.4g GHz outside the %s range %.4g-%.4g GHz', ...
+    P.fc/1e9, R.dboard, R.fRange/1e9);
 
 %% ================= R-A: CONTRACT + RADIO ================================
 C    = twopc_frame_contract(P.imgFile);
@@ -60,20 +89,14 @@ fs = prms{1}.fs;  M = prms{1}.M;  fOff = 240e3;  S = C.S;
 nBits = numel(C.bits);
 band  = fOff + [-1 1]*(1+prms{1}.beta)*(fs/M)/2;
 pn    = C.pn;
+assert(mod(R.mcr, fs) == 0, 'master clock %g does not divide fs %g', R.mcr, fs);
 
-mcr = 16e6;
-rx = comm.SDRuReceiver('Platform','B210','SerialNum',P.rxSerial, ...
-    'CenterFrequency',P.fc,'MasterClockRate',mcr, ...
-    'DecimationFactor',mcr/fs,'Gain',P.rxGain,'ChannelMapping',1, ...
-    'SamplesPerFrame',375000,'OutputDataType','double', ...
-    'EnableBurstMode',true,'NumFramesInBurst',1);
-
-fprintf('[RX] === RX PC LIVE (serial %s): close the window to stop ===\n', ...
-    P.rxSerial);
+fprintf('[RX] === RX PC ready (%s): press Scan, close the window to stop ===\n', ...
+    R.dboard);
 
 %% ================= R-B: FIGURE + CONTROLS ===============================
 fig = figure('Position',[10 60 1920 900], 'Color','w', ...
-    'Name','RX PC — PS-OFDM vs PS-AFDM image demo — close window to stop');
+    'Name','RX PC (X310) — PS-OFDM vs PS-AFDM image demo — close window to stop');
 tl = tiledlayout(fig,3,5,'TileSpacing','tight','Padding','tight');
 tl.OuterPosition = [0 0.055 1 0.945];
 title(tl, ['RX PC: matched PS-OFDM vs PS-AFDM, per-symbol CE — one ' ...
@@ -171,21 +194,13 @@ xlabel(axDD,'Doppler tap f'); ylabel(axDD,'delay l [chips]');
 title(axDD,'DD grid |h(l,f)| [dB], mean over symbols','FontSize',FS+1);
 
 % ---- control strip ------------------------------------------------------
-setappdata(fig,'rxGain',P.rxGain);
-uicontrol(fig,'Style','text','Units','normalized', ...
-    'Position',[0.05 0.030 0.10 0.020],'String','RX gain', ...
-    'HorizontalAlignment','left','BackgroundColor','w');
-sR = uicontrol(fig,'Style','slider','Units','normalized', ...
-    'Position',[0.05 0.006 0.30 0.024],'Min',20,'Max',76, ...
-    'Value',P.rxGain,'SliderStep',[1 5]/56);
-tR = uicontrol(fig,'Style','text','Units','normalized', ...
-    'Position',[0.355 0.006 0.04 0.024],'String',sprintf('%.1f',P.rxGain), ...
-    'BackgroundColor','w');
-sR.Callback = @(s,~) rxgaincb(s, fig, tR);
+gain_ui(fig, [0.03 0.004 0.27 0.048], 'RX gain', 'rxGain', gRange, ...
+    R.gainStep, P.rxGain);
 hClip = uicontrol(fig,'Style','text','Units','normalized', ...
-    'Position',[0.45 0.006 0.30 0.042],'String','peak|y| —', ...
+    'Position',[0.32 0.006 0.26 0.042],'String','peak|y| —', ...
     'HorizontalAlignment','left','BackgroundColor','w', ...
     'FontSize',10,'FontWeight','bold');
+ui = usrp_scan_ui(fig, [0.60 0.004 0.39 0.048], P, R);
 
 %% ================= R-C: ENDLESS LOOP ====================================
 evm = nan(2,0);  cfo = nan(2,0);
@@ -193,16 +208,35 @@ nOK = zeros(1,2);  nMiss = zeros(1,2);
 errTot = zeros(1,2);  bitTot = zeros(1,2);
 peakY = nan;  itTic = tic;  itS = nan;
 
-rx();                                               % warm-up, discard
+rx = [];  dev = [];
 u = 0;
 while u < P.maxIter && ishandle(fig)
-    u = u + 1;
+    % ---- radio (re)connect requested by the Scan strip ------------------
+    req = getappdata(fig,'usrpReq');
+    if ~isempty(req)
+        setappdata(fig,'usrpReq',[]);
+        [rx, dev] = connectRx(rx, req, P, R, fs, ...
+            getappdata(fig,'rxGain'), fig, ui);
+    end
+    if isempty(rx)
+        set(hPar,'String',sprintf('RX IDLE\n\nno radio connected\npress Scan'));
+        pause(0.1);                               % keeps the GUI alive
+        continue;
+    end
+
     gR = getappdata(fig,'rxGain');
     if abs(rx.Gain - gR) > 1e-9, rx.Gain = gR; end
 
-    [y, len] = rx();
+    try
+        [y, len] = rx();
+    catch e
+        try release(rx); catch, end;  rx = [];  dev = [];  setappdata(fig,'usrpIP','');
+        ui.setStatus(['radio lost: ' e.message ' -- press Scan'], 'err');
+        continue;
+    end
+    u = u + 1;
     evm(:,u) = nan;  cfo(:,u) = nan;
-    if len == 0, nMiss = nMiss + 1; continue; end
+    if len == 0, nMiss = nMiss + 1; drawnow limitrate; continue; end
     peakY = max(abs(y));
     yd = y .* exp(-1j*2*pi*fOff*(0:numel(y)-1).'/fs);
 
@@ -277,9 +311,10 @@ while u < P.maxIter && ishandle(fig)
         'PARAMS (contract)\n' ...
         'fc %.4g GHz | fs %g MS/s\nN 256 matched, Nsym 48, 16-QAM\n' ...
         'bits/frame %d (84x84 px)\nZC roots 25 / 34, scrambler 46\n' ...
-        'image %s\nserial %s\n\niteration %d\n' ...
+        'image %s\nradio %s\n%s slot %s\n\niteration %d\n' ...
         'payload fixed (deterministic\ncontract), no backchannel'], ...
-        P.fc/1e9, fs/1e6, nBits, C.imgFile, P.rxSerial, u));
+        P.fc/1e9, fs/1e6, nBits, C.imgFile, devStr(dev), R.dboard, ...
+        char('A' + P.channel - 1), u));
     if ~isnan(peakY)
         if peakY > 0.7
             set(hClip,'String',sprintf( ...
@@ -295,7 +330,7 @@ while u < P.maxIter && ishandle(fig)
 end
 
 %% ================= R-D: CLEANUP =========================================
-release(rx);
+if ~isempty(rx), release(rx); end
 for w = 1:2
     fprintf(['[RX] %-14s: %d OK / %d missed, running BER %.3g over ' ...
         '%d bits\n'], name{w}, nOK(w), nMiss(w), ...
@@ -315,7 +350,32 @@ if ishandle(fig) && isfinite(P.maxIter), close(fig); end
 
 end
 
-function rxgaincb(s, fig, t)
-v = round(s.Value*4)/4;
-setappdata(fig,'rxGain',v); set(t,'String',sprintf('%.1f',v));
+function [rx, dev] = connectRx(rx, dev, P, R, fs, g, fig, ui)
+% (re)open the receiver on dev; the warm-up capture actually opens the radio
+if ~isempty(rx), release(rx); end
+rx = [];  setappdata(fig,'usrpIP','');
+try
+    rx = comm.SDRuReceiver('Platform',dev.Platform, ...
+        'IPAddress',dev.IPAddress,'CenterFrequency',P.fc, ...
+        'MasterClockRate',R.mcr,'DecimationFactor',R.mcr/fs, ...
+        'Gain',g,'ChannelMapping',P.channel, ...
+        'SamplesPerFrame',375000,'OutputDataType','double', ...
+        'EnableBurstMode',true,'NumFramesInBurst',1);
+    rx();                                            % warm-up, discard
+catch e
+    if ~isempty(rx), try release(rx); catch, end, end
+    ui.setStatus(sprintf('connect to %s failed: %s', dev.IPAddress, ...
+        e.message), 'err');
+    rx = [];  dev = [];
+    return;
+end
+setappdata(fig,'usrpIP',dev.IPAddress);
+ui.setStatus(sprintf('connected: %s', devStr(dev)), 'ok');
+fprintf('[RX] connected: %s\n', devStr(dev));
+end
+
+function s = devStr(dev)
+if isempty(dev), s = 'none'; return; end
+sn = dev.SerialNum;  if isempty(sn), sn = '-'; end
+s = sprintf('%s %s SN %s', dev.Platform, dev.IPAddress, sn);
 end

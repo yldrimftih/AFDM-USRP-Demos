@@ -1,56 +1,83 @@
 %% =========================================================================
 %  FILE:     TX_PC_MAIN.m
 %  PROJECT:  PS-OFDM vs PS-AFDM live USRP demo  --  V1, 26 Aug 2026
+%            X310 port (Ethernet, network scan)
 %  AUTHORS:  Dr. Hyeon Seok Rou  |  Chloe (Claude Code)
 % --------------------------------------------------------------------------
 %  PURPOSE:
 %    TRANSMIT PC ENTRY POINT of the two-PC demo. Sends the PS-OFDM and
 %    PS-AFDM image bursts of the deterministic contract in an endless
 %    alternating loop and shows the transmit panel: image being sent,
-%    transmit spectra, ideal constellation, PAPR, frame counter and a
-%    live TX-gain slider. Run RX_PC_MAIN.m on the other PC.
-%    CLOSE THE WINDOW TO STOP.
+%    transmit spectra, ideal constellation, PAPR, frame counter, a live
+%    TX-gain control and the radio-selection strip. Run RX_PC_MAIN.m on
+%    the other PC. CLOSE THE WINDOW TO STOP.
 %
-%    >>> SET YOUR B210 SERIAL IN THE txSerial LINE BELOW (findsdru) <<<
+%    >>> NO SERIAL / IP TO TYPE: press SCAN in the window. The X310 found
+%        on this PC's network is connected automatically (if several are
+%        found, pick one in the list and press Connect). <<<
 %
 %  SAFETY:
-%    Antenna link only, antennas >= 30 cm apart and never touching;
-%    txGain <= 80 is asserted. For a cable loopback you must insert a
-%    30 dB attenuator and stay at txGain <= 55.
+%    Antenna link only, antennas >= 1 m apart and never touching. The TX
+%    gain can never exceed P.txGainMax. For a cable loopback you must
+%    insert a 30 dB attenuator and keep the TX gain low.
 %
 %  INPUTS:
-%    P : optional overrides -- .txSerial .fc (2.4e9) .txGain (65)
+%    P : optional overrides (defaults in the USER SETTINGS block below)
+%        .fc .txGain .txGainMin .txGainMax .daughterboard .channel
+%        .ipAddress (skip the scan) .autoScan .scanIPs
 %        .imgFile ('dog.jpg', must match the RX PC) .maxIter (Inf)
 %        .snapshot (save a panel PNG on exit)
 %  OUTPUTS:
-%    out : struct -- .iters .txGain
+%    out : struct -- .iters .txGain .ipAddress
 %
 %  DEPENDENCIES:
-%    src/twopc_frame_contract.m and its chain
+%    src/twopc_frame_contract.m and its chain, src/x310_profile.m,
+%    src/usrp_scan.m, src/usrp_scan_ui.m, src/gain_ui.m
 %    Communications Toolbox + USRP support package (comm.SDRuTransmitter)
 % =========================================================================
 function out = TX_PC_MAIN(P)
 
 addpath(fullfile(fileparts(mfilename('fullpath')), 'src'));
 if nargin < 1, P = struct(); end
-def = struct('txSerial','YOUR_TX_B210_SERIAL', 'fc',2.4e9, 'txGain',65, ...
-             'imgFile','dog.jpg', 'maxIter',Inf, 'snapshot',[]);
+
+%% ================= USER SETTINGS ========================================
+def = struct( ...
+    'fc',            2.4e9, ...       % carrier [Hz], CBX-120: 1.2-6 GHz
+    'txGain',        20, ...          % start TX gain [dB] (live control)
+    'txGainMin',     [], ...          % control range [dB]; empty = the
+    'txGainMax',     [], ...          %   daughterboard limit (0 / 31.5)
+    'daughterboard', 'CBX-120', ...   % 'CBX-120' | 'UBX-160' | 'SBX-120'
+    'channel',       1, ...           % 1 = daughterboard slot A, 2 = B
+    'ipAddress',     '', ...          % set only to skip the Scan button
+    'autoScan',      false, ...       % true: scan once when the window opens
+    'scanIPs',       {{'192.168.10.2','192.168.40.2','192.168.30.2'}}, ...
+    'imgFile',       'dog.jpg', ...   % must match the RX PC
+    'maxIter',       Inf, ...
+    'snapshot',      []);
+%% ========================================================================
 fn = fieldnames(def);
 for i = 1:numel(fn)
     if ~isfield(P, fn{i}) || isempty(P.(fn{i})), P.(fn{i}) = def.(fn{i}); end
 end
 if isempty(P.snapshot), P.snapshot = isfinite(P.maxIter); end
-assert(~contains(P.txSerial,'YOUR_'), ['Set your B210 serial: edit the ' ...
-    'txSerial default in TX_PC_MAIN.m, or call ' ...
-    'TX_PC_MAIN(struct(''txSerial'',''XXXXXXX'')). Serials are listed by ' ...
-    'findsdru in MATLAB or uhd_find_devices in a terminal.']);
-assert(P.txGain <= 80, ['SAFETY: txGain %g > 80. Antenna link only, ' ...
-    '>= 30 cm; never at cable loopback (<= 55 there, with a 30 dB pad).'], ...
-    P.txGain);
+
+R = x310_profile(P.daughterboard);
+if isempty(P.txGainMin), P.txGainMin = R.txGain(1); end
+if isempty(P.txGainMax), P.txGainMax = R.txGain(2); end
+gRange = [max(P.txGainMin, R.txGain(1)), min(P.txGainMax, R.txGain(2))];
+assert(gRange(2) > gRange(1), 'TX gain range [%g %g] is empty (%s: %g..%g dB)', ...
+    P.txGainMin, P.txGainMax, R.dboard, R.txGain);
+assert(P.txGain >= gRange(1) && P.txGain <= gRange(2), ...
+    'SAFETY: txGain %g dB outside the allowed range [%g %g] dB', ...
+    P.txGain, gRange);
+assert(P.fc >= R.fRange(1) && P.fc <= R.fRange(2), ...
+    'fc %.4g GHz outside the %s range %.4g-%.4g GHz', ...
+    P.fc/1e9, R.dboard, R.fRange/1e9);
 
 %% ================= T-A: CONTRACT + BUFFERS ==============================
 C  = twopc_frame_contract(P.imgFile);
 fs = C.prmO.fs;  M = C.prmO.M;  fOff = 240e3;
+assert(mod(R.mcr, fs) == 0, 'master clock %g does not divide fs %g', R.mcr, fs);
 
 nRF  = @(x) x .* exp(1j*2*pi*fOff*(0:numel(x)-1).'/fs);
 lead = zeros(round(0.005*fs), 1);                 % 5 ms
@@ -62,17 +89,12 @@ name = {'PS-OFDM comb', 'PS-AFDM EPA'};
 col  = [0.466 0.674 0.188; 0.850 0.325 0.098];
 papr = @(x) 10*log10(max(abs(x))^2 / mean(abs(x(abs(x)>0)).^2));
 
-mcr = 16e6;
-tx = comm.SDRuTransmitter('Platform','B210','SerialNum',P.txSerial, ...
-    'CenterFrequency',P.fc,'MasterClockRate',mcr, ...
-    'InterpolationFactor',mcr/fs,'Gain',P.txGain,'ChannelMapping',1);
-
-fprintf('[TX] === TX PC LIVE (serial %s): close the window to stop ===\n', ...
-    P.txSerial);
+fprintf('[TX] === TX PC ready (%s): press Scan, close the window to stop ===\n', ...
+    R.dboard);
 
 %% ================= T-B: FIGURE + CONTROLS ===============================
 fig = figure('Position',[10 60 1500 780], 'Color','w', ...
-    'Name','TX PC — PS-OFDM vs PS-AFDM image demo — close window to stop');
+    'Name','TX PC (X310) — PS-OFDM vs PS-AFDM image demo — close window to stop');
 tl = tiledlayout(fig,2,3,'TileSpacing','compact','Padding','compact');
 tl.OuterPosition = [0 0.07 1 0.93];
 title(tl, ['TX PC: matched PS-OFDM vs PS-AFDM, one 84x84 image per ' ...
@@ -112,44 +134,58 @@ hMt = text(axM,-0.08,0.98,'starting...', 'FontName','FixedWidth', ...
 axH = nexttile(6); axis(axH,'off');
 text(axH,-0.08,0.98, sprintf([ ...
     'HOW TO RUN\n\n' ...
-    '1. antennas >= 30 cm apart, LOS\n' ...
-    '2. start RX_PC_MAIN.m on the RX PC\n' ...
-    '3. raise TX gain until the RX panel\n' ...
+    '1. X310 on this PC''s Ethernet,\n' ...
+    '   antenna on TX/RX (slot %s)\n' ...
+    '2. press Scan (bottom right)\n' ...
+    '3. start RX_PC_MAIN.m on the RX PC\n' ...
+    '4. raise TX gain until the RX panel\n' ...
     '   shows peak|y| near (below) 0.7\n\n' ...
     'SAFETY\n' ...
-    'txGain <= 80 ANTENNA LINK ONLY\n' ...
-    'cable loopback: <= 55 + 30 dB pad\n\n' ...
+    'TX gain capped at %g dB\n' ...
+    'ANTENNA LINK ONLY, >= 1 m apart\n' ...
+    'cable loopback: 30 dB pad\n\n' ...
     'payload is fixed (deterministic\n' ...
     'contract): no backchannel, the RX\n' ...
-    'regenerates ground truth locally']), ...
-    'FontName','FixedWidth','FontSize',FS,'VerticalAlignment','top');
+    'regenerates ground truth locally'], ...
+    char('A' + P.channel - 1), gRange(2)), ...
+    'FontName','FixedWidth','FontSize',FS,'VerticalAlignment','top', ...
+    'Interpreter','none');
 
-setappdata(fig,'txGain',P.txGain);
-uicontrol(fig,'Style','text','Units','normalized', ...
-    'Position',[0.05 0.035 0.22 0.022],'String', ...
-    'TX gain (max 80, ANTENNA LINK ONLY)','HorizontalAlignment','left', ...
-    'BackgroundColor','w');
-sT = uicontrol(fig,'Style','slider','Units','normalized', ...
-    'Position',[0.05 0.010 0.30 0.025],'Min',40,'Max',80, ...
-    'Value',P.txGain,'SliderStep',[1 5]/40);
-tT = uicontrol(fig,'Style','text','Units','normalized', ...
-    'Position',[0.355 0.010 0.04 0.025],'String',sprintf('%.1f',P.txGain), ...
-    'BackgroundColor','w');
-sT.Callback = @(s,~) txgaincb(s, fig, tT);
+gain_ui(fig, [0.05 0.008 0.33 0.052], 'TX gain (ANTENNA LINK ONLY)', ...
+    'txGain', gRange, R.gainStep, P.txGain);
+ui = usrp_scan_ui(fig, [0.44 0.008 0.54 0.052], P, R);
 
 updSpec(hSp, bufs, fs);
 
 %% ================= T-C: ENDLESS LOOP ====================================
 u = 0;  itS = nan;  itTic = tic;
-tx(bufs{1});                                        % warm-up (radio ramp)
+tx = [];  dev = [];
 while u < P.maxIter && ishandle(fig)
-    u = u + 1;
+    % ---- radio (re)connect requested by the Scan strip ------------------
+    req = getappdata(fig,'usrpReq');
+    if ~isempty(req)
+        setappdata(fig,'usrpReq',[]);
+        [tx, dev] = connectTx(tx, req, P, R, fs, ...
+            getappdata(fig,'txGain'), bufs{1}, fig, ui);
+    end
+    if isempty(tx)
+        set(hMt,'String',sprintf('TX IDLE\n\nno radio connected\npress Scan'));
+        pause(0.1);                               % keeps the GUI alive
+        continue;
+    end
 
     gT = getappdata(fig,'txGain');
-    if abs(tx.Gain - gT) > 1e-9, tx.Gain = min(gT, 80); end
+    if abs(tx.Gain - gT) > 1e-9, tx.Gain = min(gT, gRange(2)); end
 
-    tx(bufs{1});                                    % PS-OFDM burst
-    tx(bufs{2});                                    % PS-AFDM burst
+    try
+        tx(bufs{1});                                % PS-OFDM burst
+        tx(bufs{2});                                % PS-AFDM burst
+    catch e
+        try release(tx); catch, end;  tx = [];  dev = [];  setappdata(fig,'usrpIP','');
+        ui.setStatus(['radio lost: ' e.message ' -- press Scan'], 'err');
+        continue;
+    end
+    u = u + 1;
 
     if mod(u, 5) == 1 || isfinite(P.maxIter)
         set(hMt,'String',sprintf([ ...
@@ -167,19 +203,21 @@ while u < P.maxIter && ishandle(fig)
             'scrambler seed 46\n' ...
             'image %s\n' ...
             'burst %g samples (%.0f ms)\n' ...
-            'serial %s'], ...
+            'radio %s'], ...
             P.fc/1e9, fs/1e6, fs/M/1e3, M, fOff/1e3, numel(C.bits), ...
-            C.imgFile, Lbuf, 1e3*Lbuf/fs, P.txSerial));
-        drawnow limitrate;
+            C.imgFile, Lbuf, 1e3*Lbuf/fs, devStr(dev, R, P)));
         itS = toc(itTic) / max(u - max(u-5,0), 1);  itTic = tic;
     end
+    drawnow limitrate;                            % also runs the callbacks
 end
 
 %% ================= T-D: CLEANUP =========================================
-release(tx);
-fprintf('[TX] stopped after %d burst pairs (txGain %.1f)\n', ...
-    u, getappdata(fig,'txGain'));
-out = struct('iters',u, 'txGain',getappdata(fig,'txGain'));
+if ~isempty(tx), release(tx); end
+gEnd = P.txGain;
+if ishandle(fig), gEnd = getappdata(fig,'txGain'); end
+fprintf('[TX] stopped after %d burst pairs (txGain %.1f)\n', u, gEnd);
+ip = '';  if ~isempty(dev), ip = dev.IPAddress; end
+out = struct('iters',u, 'txGain',gEnd, 'ipAddress',ip);
 if P.snapshot && ishandle(fig)
     fdir = fullfile(fileparts(mfilename('fullpath')), 'figures');
     if ~exist(fdir, 'dir'), mkdir(fdir); end
@@ -192,9 +230,33 @@ if ishandle(fig) && isfinite(P.maxIter), close(fig); end
 
 end
 
-function txgaincb(s, fig, t)
-v = min(round(s.Value*4)/4, 80);
-setappdata(fig,'txGain',v); set(t,'String',sprintf('%.1f',v));
+function [tx, dev] = connectTx(tx, dev, P, R, fs, g, warm, fig, ui)
+% (re)open the transmitter on dev; the first burst actually opens the radio
+if ~isempty(tx), release(tx); end
+tx = [];  setappdata(fig,'usrpIP','');
+try
+    tx = comm.SDRuTransmitter('Platform',dev.Platform, ...
+        'IPAddress',dev.IPAddress,'CenterFrequency',P.fc, ...
+        'MasterClockRate',R.mcr,'InterpolationFactor',R.mcr/fs, ...
+        'Gain',g,'ChannelMapping',P.channel);
+    tx(warm);                                        % warm-up (radio ramp)
+catch e
+    if ~isempty(tx), try release(tx); catch, end, end
+    ui.setStatus(sprintf('connect to %s failed: %s', dev.IPAddress, ...
+        e.message), 'err');
+    tx = [];  dev = [];
+    return;
+end
+setappdata(fig,'usrpIP',dev.IPAddress);
+ui.setStatus(sprintf('connected: %s', devStr(dev, R, P)), 'ok');
+fprintf('[TX] connected: %s\n', devStr(dev, R, P));
+end
+
+function s = devStr(dev, R, P)
+if isempty(dev), s = 'none'; return; end
+sn = dev.SerialNum;  if isempty(sn), sn = '-'; end
+s = sprintf('%s %s SN %s, %s slot %s', dev.Platform, dev.IPAddress, sn, ...
+    R.dboard, char('A' + P.channel - 1));
 end
 
 function updSpec(hSp, bufPair, fs)

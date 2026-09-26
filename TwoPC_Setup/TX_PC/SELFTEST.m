@@ -8,8 +8,8 @@
 %    verifies the required toolboxes, builds the deterministic contract,
 %    and runs the complete synthetic transmit -> channel -> receive
 %    pipeline for both waveforms, asserting BER 0 and a bit-exact image.
-%    When it passes, plug the B210 in, run findsdru to read your serial
-%    number, and start the MAIN script of this PC.
+%    When it passes, connect the X310 (Ethernet), start the MAIN script of
+%    this PC and press Scan in its window.
 %
 %  INPUTS:  none
 %  OUTPUTS: none (prints [SELFTEST] PASS, or errors with a reason)
@@ -54,6 +54,7 @@ assert(isequal(bits2img420(dsc(1:6*C.S^2), C.S), C.rgb), ...
     '[SELFTEST] image not bit-exact');
 fprintf(['[SELFTEST] synthetic chain OK: BER 0 both waveforms, EVM ' ...
     '%.2f%% / %.2f%%, image bit-exact\n'], oO.evmPct, oA.evmPct);
-fprintf('[SELFTEST] === PASS === next: plug the B210 (USB3) and run findsdru\n');
+fprintf(['[SELFTEST] === PASS === next: connect the X310 (Ethernet), run ' ...
+    'the MAIN script and press Scan\n']);
 
 end
