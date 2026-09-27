@@ -23,6 +23,9 @@ for db = {'CBX-120', 'UBX-160', 'SBX-120'}
     assert(2.4e9 >= R.fRange(1) && 2.4e9 <= R.fRange(2), ...
         '%s: 2.4 GHz outside the tuning range', db{1});
     assert(any(strcmp(R.platforms, 'X310')));
+    assert(all(mod(R.mcr, R.fsOpts) == 0), '%s: an offered fs does not divide mcr', db{1});
+    assert(any(R.fsOpts == fs), '%s: default fs not offered', db{1});
+    assert(isequal(R.rfNames, {'RF0','RF1'}));
 end
 assert(strcmp(x310_profile().dboard, 'CBX-120'), 'default board must be CBX-120');
 

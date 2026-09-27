@@ -13,6 +13,8 @@
 %  OUTPUTS:
 %    R : struct -- .dboard .mcr .txGain .rxGain ([min max] dB) .gainStep
 %        .fRange ([min max] Hz) .platforms (accepted findsdru platforms)
+%        .fsOpts (selectable sample rates [S/s]; each divides mcr)
+%        .rfNames ({'RF0','RF1'} = ChannelMapping 1 / 2 = slot A / B)
 %
 %  DEPENDENCIES:
 %    none
@@ -30,9 +32,13 @@ switch upper(dboard)
 end
 
 % 200 MHz is the X310 default master clock; 184.32 MHz does not divide
-% the demo's 1 MS/s, so it is not offered.
+% the offered sample rates, so it is not used.
+% Sample rates offered in the GUI. The waveform is defined in samples
+% (5 samples/chip), so the occupied bandwidth is 0.27*fs: 135 kHz ...
+% 2.7 MHz. 10 MS/s (40 MB/s) is well inside 1 GbE.
 R = struct('dboard',upper(dboard), 'mcr',200e6, ...
     'txGain',[0 31.5], 'rxGain',[0 31.5], 'gainStep',0.5, ...
-    'fRange',fRange, 'platforms',{{'X310','X300'}});
+    'fRange',fRange, 'platforms',{{'X310','X300'}}, ...
+    'fsOpts',[0.5 1 2 5 10]*1e6, 'rfNames',{{'RF0','RF1'}});
 
 end

@@ -27,7 +27,7 @@ connected to this PC by Ethernet. Full documentation is in the
 ## Run it
 
 1. `SELFTEST` — no radio needed; must print `[SELFTEST] === PASS ===`.
-2. Antenna on the **TX/RX** port of daughterboard slot **A**.
+2. Antenna on the **TX/RX** port of **RF0** (daughterboard slot A) or **RF1** (slot B) — the one selected in the window.
 3. Run `TX_PC_MAIN.m` and press **Scan** (bottom right of the window). A
    single X310 found is connected automatically. If there are several, pick
    one from the list and press **Connect**.
@@ -37,6 +37,15 @@ connected to this PC by Ethernet. Full documentation is in the
 If the radio is lost (cable, power), the status line turns red: press Scan
 again. Nothing needs to be restarted.
 
+## Run-time controls (in the window, no restart needed)
+
+| Control | What it does |
+|---|---|
+| **TX gain** slider + box | gain in dB, applied from the next burst; type a value and press Enter |
+| **Bandwidth** menu | 135 kHz … 2.7 MHz (0.5 … 10 MS/s); the radio is re-opened at the new rate. Set the **same** bandwidth on both PCs |
+| **RF** menu | RF0 or RF1; the radio is re-opened on that RF |
+| **Scan / Connect** | find and (re)connect the X310 |
+
 ## Settings (USER SETTINGS block at the top of `TX_PC_MAIN.m`)
 
 | Field | Default | Meaning |
@@ -45,7 +54,8 @@ again. Nothing needs to be restarted.
 | `txGain` | 20 | TX gain at start [dB]; live slider + type-in box |
 | `txGainMin`, `txGainMax` | board limits (0 / 31.5) | range of the gain control; `txGainMax` is the safety cap |
 | `daughterboard` | `'CBX-120'` | `'CBX-120'`, `'UBX-160'` or `'SBX-120'` |
-| `channel` | 1 | 1 = slot A, 2 = slot B |
+| `fs` | 1e6 | sample rate at start; bandwidth = 0.27·fs. Must match the RX PC |
+| `rf` | `'RF0'` | RF at start: `'RF0'` (slot A) or `'RF1'` (slot B) |
 | `ipAddress` | `''` | set only to skip the Scan button and connect directly |
 | `autoScan` | false | true: scan once as soon as the window opens |
 | `imgFile` | `'ku.jpg'` | must be identical on both PCs |

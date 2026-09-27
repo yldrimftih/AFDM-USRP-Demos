@@ -28,7 +28,7 @@
 %
 %  INPUTS:
 %    P : optional overrides (defaults in the USER SETTINGS block below)
-%        .fc .rxGain .rxGainMin .rxGainMax .daughterboard .channel
+%        .fc .rxGain .rxGainMin .rxGainMax .fs .rf .daughterboard
 %        .ipAddress (skip the scan) .autoScan .scanIPs
 %        .imgFile ('ku.jpg', must match the TX PC) .maxIter (Inf)
 %        .snapshot (save a panel PNG on exit)
@@ -38,7 +38,7 @@
 %  DEPENDENCIES:
 %    src/twopc_frame_contract.m, combofdm_rx, stage5_afdm_rx, bits2img420,
 %    src/rx_chansel.m, src/x310_profile.m, src/usrp_scan.m,
-%    src/usrp_scan_ui.m, src/gain_ui.m
+%    src/usrp_scan_ui.m, src/gain_ui.m, src/radio_cfg_ui.m
 %    Communications Toolbox + USRP support package (comm.SDRuReceiver)
 % =========================================================================
 function out = RX_PC_MAIN(P)
@@ -52,12 +52,14 @@ def = struct( ...
     'rxGain',        20, ...          % start RX gain [dB] (live control)
     'rxGainMin',     [], ...          % control range [dB]; empty = the
     'rxGainMax',     [], ...          %   daughterboard limit (0 / 31.5)
+    'fs',            1e6, ...         % start sample rate [S/s] (live), must
+    ...                               %   match the TX PC: bandwidth 0.27*fs
+    'rf',            'RF0', ...       % start RF (live): 'RF0' | 'RF1'
     'daughterboard', 'CBX-120', ...   % 'CBX-120' | 'UBX-160' | 'SBX-120'
-    'channel',       1, ...           % 1 = daughterboard slot A, 2 = B
     'ipAddress',     '', ...          % set only to skip the Scan button
     'autoScan',      false, ...       % true: scan once when the window opens
     'scanIPs',       {{'192.168.10.2','192.168.40.2','192.168.30.2'}}, ...
-    'imgFile',       'ku.jpg', ...   % must match the TX PC
+    'imgFile',       'ku.jpg', ...    % must match the TX PC
     'maxIter',       Inf, ...
     'snapshot',      []);
 %% ========================================================================
@@ -78,6 +80,9 @@ assert(P.rxGain >= gRange(1) && P.rxGain <= gRange(2), ...
 assert(P.fc >= R.fRange(1) && P.fc <= R.fRange(2), ...
     'fc %.4g GHz outside the %s range %.4g-%.4g GHz', ...
     P.fc/1e9, R.dboard, R.fRange/1e9);
+assert(any(R.fsOpts == P.fs), 'fs %g not offered; choose one of %s', ...
+    P.fs, mat2str(R.fsOpts));
+assert(any(strcmp(R.rfNames, P.rf)), 'rf must be ''RF0'' or ''RF1''');
 
 %% ================= R-A: CONTRACT + RADIO ================================
 C    = twopc_frame_contract(P.imgFile);
@@ -86,16 +91,19 @@ refs = {C.refO, C.refA};                      % sync refs + ideal symbols
 rxf  = {@combofdm_rx, @stage5_afdm_rx};
 name = {'PS-OFDM comb', 'PS-AFDM EPA'};
 col  = [0.466 0.674 0.188; 0.850 0.325 0.098];
-fs = prms{1}.fs;  M = prms{1}.M;  fOff = 240e3;  S = C.S;
+M = prms{1}.M;  S = C.S;
+bwF   = (1 + prms{1}.beta) / M;               % occupied bandwidth / fs
 nBits = numel(C.bits);
-band  = fOff + [-1 1]*(1+prms{1}.beta)*(fs/M)/2;
 pn    = C.pn;
-assert(mod(R.mcr, fs) == 0, 'master clock %g does not divide fs %g', R.mcr, fs);
-% Two free-running radios: resolve the STF's +-fs/(2 Ls) = +-6.25 kHz CFO
-% ambiguity over k = -2..2 (capture range +-31 kHz; the X310 pair measured
+% Two free-running radios: resolve the STF's +-fs/(2 Ls) CFO ambiguity
+% over k = -2..2 (+-6.25 kHz -> +-31 kHz at 1 MS/s; the X310 pair measured
 % -7.5 kHz), and tell the receivers the channel-select filter's noise gain.
-[~, nbw] = rx_chansel(0, fs);
+[~, nbw] = rx_chansel(0);
 for w = 1:2, prms{w}.cfoAmbig = 2;  prms{w}.noiseBW = nbw; end
+% Sample rate (= bandwidth): the waveform is defined in samples, so only
+% the Hz conversions (prm.fs), the IF and the capture length follow fs.
+fs = P.fs;
+[prms, fOff, nF] = applyRate(prms, fs);
 
 fprintf('[RX] === RX PC ready (%s): press Scan, close the window to stop ===\n', ...
     R.dboard);
@@ -104,7 +112,7 @@ fprintf('[RX] === RX PC ready (%s): press Scan, close the window to stop ===\n',
 fig = figure('Position',[10 60 1920 900], 'Color','w', ...
     'Name','RX PC (X310) — PS-OFDM vs PS-AFDM image demo — close window to stop');
 tl = tiledlayout(fig,3,5,'TileSpacing','tight','Padding','tight');
-tl.OuterPosition = [0 0.055 1 0.945];
+tl.OuterPosition = [0 0.095 1 0.905];
 title(tl, ['RX PC: matched PS-OFDM vs PS-AFDM, per-symbol CE — one ' ...
     '84x84 image per frame, 16-QAM, N = 256 — demo by Dr. Hyeon Seok Rou'], ...
     'FontWeight','bold','FontSize',12);
@@ -115,7 +123,7 @@ FS = 8;  W = 100;
 axS1 = nexttile(tid(1,1)); hold(axS1,'on'); grid(axS1,'on');
 hS1 = gobjects(1,2);
 for w = 1:2, hS1(w) = plot(axS1,nan,nan,'-','Color',col(w,:)); end
-ylim(axS1,[0 1.05]); xlim(axS1,[-1.7 0.3]); set(axS1,'FontSize',FS);
+ylim(axS1,[0 1.05]); set(axS1,'FontSize',FS);
 xlabel(axS1,'t - t_0 [ms]'); ylabel(axS1,'S&C metric');
 title(axS1,'COMMON: STF plateau (coarse CFO)','FontSize',FS+1);
 legend(axS1,hS1,{'OFDM','AFDM'},'Location','southwest','FontSize',FS-1);
@@ -127,16 +135,16 @@ for w = 1:2
     hM2(w) = plot(axS2,0,nan,'v','Color',col(w,:), ...
                   'MarkerFaceColor',col(w,:),'MarkerSize',5);
 end
-ylim(axS2,[0 1]); xlim(axS2,[-2.5 2.5]); set(axS2,'FontSize',FS);
+ylim(axS2,[0 1]); set(axS2,'FontSize',FS);
 xlabel(axS2,'t - t_0 [ms]'); ylabel(axS2,'normalized corr');
 title(axS2,'COMMON: ZC peaks (roots 25 / 34)','FontSize',FS+1);
 
 axSp = nexttile(tid(1,3)); hold(axSp,'on'); grid(axSp,'on');
 hSp = plot(axSp, nan, nan, 'Color', [0.3 0.3 0.6]);
-xlim(axSp,[-500 500]); set(axSp,'FontSize',FS);
+set(axSp,'FontSize',FS);
 xlabel(axSp,'f [kHz]'); ylabel(axSp,'PSD [dB/Hz]');
 title(axSp,'RX spectrum (full capture)','FontSize',FS+1);
-arrayfun(@(v) xline(axSp, v/1e3, ':k', 'LineWidth', 1), band);
+hBand = [xline(axSp, 0, ':k', 'LineWidth', 1), xline(axSp, 0, ':k', 'LineWidth', 1)];
 
 axE = nexttile(tid(1,4)); hold(axE,'on'); grid(axE,'on');
 yyaxis(axE,'left');  hE = gobjects(1,2);
@@ -207,6 +215,8 @@ hClip = uicontrol(fig,'Style','text','Units','normalized', ...
     'HorizontalAlignment','left','BackgroundColor','w', ...
     'FontSize',10,'FontWeight','bold');
 ui = usrp_scan_ui(fig, [0.60 0.004 0.39 0.048], P, R);
+radio_cfg_ui(fig, [0.60 0.058 0.39 0.030], R, bwF, fs, P.rf);
+rateAxes(axS1, axS2, axSp, hBand, fs, fOff, bwF);
 
 %% ================= R-C: ENDLESS LOOP ====================================
 evm = nan(2,0);  cfo = nan(2,0);
@@ -217,11 +227,28 @@ peakY = nan;  itTic = tic;  itS = nan;
 rx = [];  dev = [];
 u = 0;
 while u < P.maxIter && ishandle(fig)
+    % ---- bandwidth / RF change requested by the settings strip ---------
+    cfg = getappdata(fig,'cfgReq');
+    if ~isempty(cfg)
+        setappdata(fig,'cfgReq',[]);
+        if cfg.fs ~= fs || ~strcmp(cfg.rf, P.rf)
+            fs = cfg.fs;  P.rf = cfg.rf;
+            [prms, fOff, nF] = applyRate(prms, fs);
+            rateAxes(axS1, axS2, axSp, hBand, fs, fOff, bwF);
+            fprintf('[RX] bandwidth %g kHz (fs %g MS/s), %s\n', ...
+                bwF*fs/1e3, fs/1e6, P.rf);
+            if ~isempty(dev)                       % re-open on the new settings
+                [rx, dev] = connectRx(rx, dev, P, R, fs, nF, ...
+                    getappdata(fig,'rxGain'), fig, ui);
+            end
+        end
+    end
+
     % ---- radio (re)connect requested by the Scan strip ------------------
     req = getappdata(fig,'usrpReq');
     if ~isempty(req)
         setappdata(fig,'usrpReq',[]);
-        [rx, dev] = connectRx(rx, req, P, R, fs, ...
+        [rx, dev] = connectRx(rx, req, P, R, fs, nF, ...
             getappdata(fig,'rxGain'), fig, ui);
     end
     if isempty(rx)
@@ -234,7 +261,7 @@ while u < P.maxIter && ishandle(fig)
     if abs(rx.Gain - gR) > 1e-9, rx.Gain = gR; end
 
     try
-        [y, len] = rx();
+        [y, len] = grab(rx, nF);
     catch e
         try release(rx); catch, end;  rx = [];  dev = [];  setappdata(fig,'usrpIP','');
         ui.setStatus(['radio lost: ' e.message ' -- press Scan'], 'err');
@@ -245,7 +272,7 @@ while u < P.maxIter && ishandle(fig)
     if len == 0, nMiss = nMiss + 1; drawnow limitrate; continue; end
     peakY = max(abs(y));
     yd = y .* exp(-1j*2*pi*fOff*(0:numel(y)-1).'/fs);
-    yd = rx_chansel(yd, fs);                  % drop LO-leakage tones
+    yd = rx_chansel(yd);                      % drop LO-leakage tones
 
     [ppc, ffc] = pwelch(y, hann(1024), 512, 4096, fs, 'centered');
     set(hSp,'XData',ffc/1e3,'YData',10*log10(ppc));
@@ -272,10 +299,10 @@ while u < P.maxIter && ishandle(fig)
 
         t0 = o.t0;
         idxS = (1:numel(o.dbg.mS)).';
-        selS = idxS > t0-1.7e-3*fs & idxS < t0+0.3e-3*fs;
+        selS = idxS > t0-1700 & idxS < t0+300;     % samples: same view
         set(hS1(w),'XData',(idxS(selS)-t0)/fs*1e3,'YData',o.dbg.mS(selS));
-        idxC = (1:numel(o.dbg.mCurve)).';
-        selC = idxC > t0-2.5e-3*fs & idxC < t0+2.5e-3*fs;
+        idxC = (1:numel(o.dbg.mCurve)).';          %   at every bandwidth
+        selC = idxC > t0-2500 & idxC < t0+2500;
         set(hS2(w),'XData',(idxC(selC)-t0)/fs*1e3, ...
                    'YData',o.dbg.mCurve(selC));
         set(hM2(w),'YData',o.m);
@@ -316,12 +343,13 @@ while u < P.maxIter && ishandle(fig)
     xlim(axE,[iw2(1)-1, iw2(end)+1]);
     set(hPar,'String',sprintf([ ...
         'PARAMS (contract)\n' ...
-        'fc %.4g GHz | fs %g MS/s\nN 256 matched, Nsym 48, 16-QAM\n' ...
+        'fc %.4g GHz | fs %g MS/s\nbandwidth %g kHz\n' ...
+        'N 256 matched, Nsym 48, 16-QAM\n' ...
         'bits/frame %d (84x84 px)\nZC roots 25 / 34, scrambler 46\n' ...
-        'image %s\nradio %s\n%s slot %s\n\niteration %d\n' ...
+        'image %s\nradio %s\n%s %s\n\niteration %d\n' ...
         'payload fixed (deterministic\ncontract), no backchannel'], ...
-        P.fc/1e9, fs/1e6, nBits, C.imgFile, devStr(dev), R.dboard, ...
-        char('A' + P.channel - 1), u));
+        P.fc/1e9, fs/1e6, bwF*fs/1e3, nBits, C.imgFile, devStr(dev), ...
+        R.dboard, P.rf, u));
     if ~isnan(peakY)
         if peakY > 0.7
             set(hClip,'String',sprintf( ...
@@ -344,7 +372,7 @@ for w = 1:2
         errTot(w)/max(bitTot(w),1), bitTot(w));
 end
 out = struct('name',{name},'nOK',nOK,'nMiss',nMiss,'errTot',errTot, ...
-    'bitTot',bitTot,'evm',evm,'cfo',cfo,'iters',u,'P',P);
+    'bitTot',bitTot,'evm',evm,'cfo',cfo,'iters',u,'fs',fs,'rf',P.rf,'P',P);
 if P.snapshot && ishandle(fig)
     fdir = fullfile(fileparts(mfilename('fullpath')), 'figures');
     if ~exist(fdir, 'dir'), mkdir(fdir); end
@@ -357,7 +385,7 @@ if ishandle(fig) && isfinite(P.maxIter), close(fig); end
 
 end
 
-function [rx, dev] = connectRx(rx, dev, P, R, fs, g, fig, ui)
+function [rx, dev] = connectRx(rx, dev, P, R, fs, nF, g, fig, ui)
 % (re)open the receiver on dev; the warm-up capture actually opens the radio
 if ~isempty(rx), release(rx); end
 rx = [];  setappdata(fig,'usrpIP','');
@@ -365,10 +393,10 @@ try
     rx = comm.SDRuReceiver('Platform',dev.Platform, ...
         'IPAddress',dev.IPAddress,'CenterFrequency',P.fc, ...
         'MasterClockRate',R.mcr,'DecimationFactor',R.mcr/fs, ...
-        'Gain',g,'ChannelMapping',P.channel, ...
+        'Gain',g,'ChannelMapping',find(strcmp(R.rfNames, P.rf)), ...
         'SamplesPerFrame',375000,'OutputDataType','double', ...
-        'EnableBurstMode',true,'NumFramesInBurst',1);
-    rx();                                            % warm-up, discard
+        'EnableBurstMode',true,'NumFramesInBurst',nF);
+    grab(rx, nF);                                    % warm-up, discard
 catch e
     if ~isempty(rx), try release(rx); catch, end, end
     ui.setStatus(sprintf('connect to %s failed: %s', dev.IPAddress, ...
@@ -377,8 +405,37 @@ catch e
     return;
 end
 setappdata(fig,'usrpIP',dev.IPAddress);
-ui.setStatus(sprintf('connected: %s', devStr(dev)), 'ok');
-fprintf('[RX] connected: %s\n', devStr(dev));
+ui.setStatus(sprintf('connected: %s, %s, %g MS/s', devStr(dev), P.rf, ...
+    fs/1e6), 'ok');
+fprintf('[RX] connected: %s, %s, %g MS/s\n', devStr(dev), P.rf, fs/1e6);
+end
+
+function [y, len] = grab(rx, nF)
+% one contiguous capture: the nF frames of one burst, back to back
+y = cell(nF, 1);  len = 0;
+for k = 1:nF
+    [y{k}, lk] = rx();
+    len = len + lk;
+end
+y = vertcat(y{:});
+end
+
+function [prms, fOff, nF] = applyRate(prms, fs)
+% sample rate -> Hz conversions of both receivers, IF (+0.24 fs) and the
+% number of 375,000-sample frames per capture: >= 375 ms at every rate, so
+% a capture always spans a full TX burst pair plus the TX loop's gaps
+for w = 1:numel(prms), prms{w}.fs = fs; end
+fOff = 0.24 * fs;
+nF   = max(1, round(fs / 1e6));
+end
+
+function rateAxes(axS1, axS2, axSp, hBand, fs, fOff, bwF)
+% axes that are in Hz or ms follow the sample rate
+xlim(axS1, [-1700 300]/fs*1e3);
+xlim(axS2, [-2500 2500]/fs*1e3);
+xlim(axSp, [-1 1]*fs/2e3);
+band = fOff + [-1 1]*bwF*fs/2;
+for k = 1:2, hBand(k).Value = band(k)/1e3; end
 end
 
 function s = devStr(dev)

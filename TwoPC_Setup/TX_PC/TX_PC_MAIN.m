@@ -8,9 +8,10 @@
 %    TRANSMIT PC ENTRY POINT of the two-PC demo. Sends the PS-OFDM and
 %    PS-AFDM image bursts of the deterministic contract in an endless
 %    alternating loop and shows the transmit panel: image being sent,
-%    transmit spectra, ideal constellation, PAPR, frame counter, a live
-%    TX-gain control and the radio-selection strip. Run RX_PC_MAIN.m on
-%    the other PC. CLOSE THE WINDOW TO STOP.
+%    transmit spectra, ideal constellation, PAPR, frame counter, run-time
+%    controls for TX gain [dB], bandwidth and RF (RF0 / RF1), and the
+%    radio-selection strip. Run RX_PC_MAIN.m on the other PC.
+%    CLOSE THE WINDOW TO STOP.
 %
 %    >>> NO SERIAL / IP TO TYPE: press SCAN in the window. The X310 found
 %        on this PC's network is connected automatically (if several are
@@ -23,16 +24,16 @@
 %
 %  INPUTS:
 %    P : optional overrides (defaults in the USER SETTINGS block below)
-%        .fc .txGain .txGainMin .txGainMax .daughterboard .channel
+%        .fc .txGain .txGainMin .txGainMax .fs .rf .daughterboard
 %        .ipAddress (skip the scan) .autoScan .scanIPs
 %        .imgFile ('ku.jpg', must match the RX PC) .maxIter (Inf)
 %        .snapshot (save a panel PNG on exit)
 %  OUTPUTS:
-%    out : struct -- .iters .txGain .ipAddress
+%    out : struct -- .iters .txGain .fs .rf .ipAddress
 %
 %  DEPENDENCIES:
 %    src/twopc_frame_contract.m and its chain, src/x310_profile.m,
-%    src/usrp_scan.m, src/usrp_scan_ui.m, src/gain_ui.m
+%    src/usrp_scan.m, src/usrp_scan_ui.m, src/gain_ui.m, src/radio_cfg_ui.m
 %    Communications Toolbox + USRP support package (comm.SDRuTransmitter)
 % =========================================================================
 function out = TX_PC_MAIN(P)
@@ -46,12 +47,14 @@ def = struct( ...
     'txGain',        20, ...          % start TX gain [dB] (live control)
     'txGainMin',     [], ...          % control range [dB]; empty = the
     'txGainMax',     [], ...          %   daughterboard limit (0 / 31.5)
+    'fs',            1e6, ...         % start sample rate [S/s] (live):
+    ...                               %   bandwidth = 0.27*fs, 0.5-10 MS/s
+    'rf',            'RF0', ...       % start RF (live): 'RF0' | 'RF1'
     'daughterboard', 'CBX-120', ...   % 'CBX-120' | 'UBX-160' | 'SBX-120'
-    'channel',       1, ...           % 1 = daughterboard slot A, 2 = B
     'ipAddress',     '', ...          % set only to skip the Scan button
     'autoScan',      false, ...       % true: scan once when the window opens
     'scanIPs',       {{'192.168.10.2','192.168.40.2','192.168.30.2'}}, ...
-    'imgFile',       'ku.jpg', ...   % must match the RX PC
+    'imgFile',       'ku.jpg', ...    % must match the RX PC
     'maxIter',       Inf, ...
     'snapshot',      []);
 %% ========================================================================
@@ -73,18 +76,16 @@ assert(P.txGain >= gRange(1) && P.txGain <= gRange(2), ...
 assert(P.fc >= R.fRange(1) && P.fc <= R.fRange(2), ...
     'fc %.4g GHz outside the %s range %.4g-%.4g GHz', ...
     P.fc/1e9, R.dboard, R.fRange/1e9);
+assert(any(R.fsOpts == P.fs), 'fs %g not offered; choose one of %s', ...
+    P.fs, mat2str(R.fsOpts));
+assert(any(strcmp(R.rfNames, P.rf)), 'rf must be ''RF0'' or ''RF1''');
 
 %% ================= T-A: CONTRACT + BUFFERS ==============================
 C  = twopc_frame_contract(P.imgFile);
-fs = C.prmO.fs;  M = C.prmO.M;  fOff = 240e3;
-assert(mod(R.mcr, fs) == 0, 'master clock %g does not divide fs %g', R.mcr, fs);
-
-nRF  = @(x) x .* exp(1j*2*pi*fOff*(0:numel(x)-1).'/fs);
-lead = zeros(round(0.005*fs), 1);                 % 5 ms
-mkB  = @(x) [lead; nRF(x); lead];                 % 5 ms head + 5 ms tail
-Lbuf = max(numel(mkB(C.xO)), numel(mkB(C.xA)));
-padz = @(x) [x; zeros(Lbuf - numel(x), 1)];
-bufs = {padz(mkB(C.xO)), padz(mkB(C.xA))};        % constant buffer length
+M  = C.prmO.M;
+bwF = (1 + C.prmO.beta) / M;                      % occupied bandwidth / fs
+fs = P.fs;
+[bufs, Lbuf, fOff] = makeBufs(C, fs);
 name = {'PS-OFDM comb', 'PS-AFDM EPA'};
 col  = [0.466 0.674 0.188; 0.850 0.325 0.098];
 papr = @(x) 10*log10(max(abs(x))^2 / mean(abs(x(abs(x)>0)).^2));
@@ -96,7 +97,7 @@ fprintf('[TX] === TX PC ready (%s): press Scan, close the window to stop ===\n',
 fig = figure('Position',[10 60 1500 780], 'Color','w', ...
     'Name','TX PC (X310) — PS-OFDM vs PS-AFDM image demo — close window to stop');
 tl = tiledlayout(fig,2,3,'TileSpacing','compact','Padding','compact');
-tl.OuterPosition = [0 0.07 1 0.93];
+tl.OuterPosition = [0 0.11 1 0.89];
 title(tl, ['TX PC: matched PS-OFDM vs PS-AFDM, one 84x84 image per ' ...
     'frame, 16-QAM, N = 256 — demo by Dr. Hyeon Seok Rou'], ...
     'FontWeight','bold','FontSize',12);
@@ -110,9 +111,8 @@ title(axI, 'image being sent (as-transmitted, 4:2:0 / 4-bit)', ...
 axSp = nexttile(2); hold(axSp,'on'); grid(axSp,'on');
 hSp = gobjects(1,2);
 for w = 1:2, hSp(w) = plot(axSp, nan, nan, 'Color', col(w,:)); end
-xlim(axSp,[-500 500]); set(axSp,'FontSize',FS);
+set(axSp,'FontSize',FS);
 xlabel(axSp,'f [kHz]'); ylabel(axSp,'PSD [dB/Hz]');
-title(axSp,'TX baseband spectra (as sent, IF +240 kHz)','FontSize',FS+1);
 legend(axSp, hSp, name, 'Location','south','FontSize',FS-1);
 
 axP = nexttile(3); axis(axP,'off');
@@ -135,9 +135,10 @@ axH = nexttile(6); axis(axH,'off');
 text(axH,-0.08,0.98, sprintf([ ...
     'HOW TO RUN\n\n' ...
     '1. X310 on this PC''s Ethernet,\n' ...
-    '   antenna on TX/RX (slot %s)\n' ...
+    '   antenna on TX/RX of RF0 or RF1\n' ...
     '2. press Scan (bottom right)\n' ...
-    '3. start RX_PC_MAIN.m on the RX PC\n' ...
+    '3. start RX_PC_MAIN.m on the RX PC,\n' ...
+    '   SAME bandwidth on both PCs\n' ...
     '4. raise TX gain until the RX panel\n' ...
     '   shows peak|y| near (below) 0.7\n\n' ...
     'SAFETY\n' ...
@@ -146,21 +147,38 @@ text(axH,-0.08,0.98, sprintf([ ...
     'cable loopback: 30 dB pad\n\n' ...
     'payload is fixed (deterministic\n' ...
     'contract): no backchannel, the RX\n' ...
-    'regenerates ground truth locally'], ...
-    char('A' + P.channel - 1), gRange(2)), ...
+    'regenerates ground truth locally'], gRange(2)), ...
     'FontName','FixedWidth','FontSize',FS,'VerticalAlignment','top', ...
     'Interpreter','none');
 
 gain_ui(fig, [0.05 0.008 0.33 0.052], 'TX gain (ANTENNA LINK ONLY)', ...
     'txGain', gRange, R.gainStep, P.txGain);
 ui = usrp_scan_ui(fig, [0.44 0.008 0.54 0.052], P, R);
+radio_cfg_ui(fig, [0.44 0.066 0.54 0.032], R, bwF, fs, P.rf);
 
-updSpec(hSp, bufs, fs);
+showRate(axSp, hSp, bufs, fs, fOff);
 
 %% ================= T-C: ENDLESS LOOP ====================================
-u = 0;  itS = nan;  itTic = tic;
+u = 0;  itS = nan;  itTic = tic;  gT = P.txGain;
 tx = [];  dev = [];
 while u < P.maxIter && ishandle(fig)
+    % ---- bandwidth / RF change requested by the settings strip ---------
+    cfg = getappdata(fig,'cfgReq');
+    if ~isempty(cfg)
+        setappdata(fig,'cfgReq',[]);
+        if cfg.fs ~= fs || ~strcmp(cfg.rf, P.rf)
+            fs = cfg.fs;  P.rf = cfg.rf;
+            [bufs, Lbuf, fOff] = makeBufs(C, fs);
+            showRate(axSp, hSp, bufs, fs, fOff);
+            fprintf('[TX] bandwidth %g kHz (fs %g MS/s), %s\n', ...
+                bwF*fs/1e3, fs/1e6, P.rf);
+            if ~isempty(dev)                       % re-open on the new settings
+                [tx, dev] = connectTx(tx, dev, P, R, fs, ...
+                    getappdata(fig,'txGain'), bufs{1}, fig, ui);
+            end
+        end
+    end
+
     % ---- radio (re)connect requested by the Scan strip ------------------
     req = getappdata(fig,'usrpReq');
     if ~isempty(req)
@@ -186,6 +204,7 @@ while u < P.maxIter && ishandle(fig)
         continue;
     end
     u = u + 1;
+    if ~ishandle(fig), break; end                 % closed during the bursts
 
     if mod(u, 5) == 1 || isfinite(P.maxIter)
         set(hMt,'String',sprintf([ ...
@@ -195,17 +214,19 @@ while u < P.maxIter && ishandle(fig)
             papr(bufs{1}), papr(bufs{2}), itS));
         set(hPar,'String',sprintf([ ...
             'PARAMS (contract)\n' ...
-            'fc %.4g GHz | fs %g MS/s\n%g kchip/s (M %d), IF +%d kHz\n' ...
+            'fc %.4g GHz | fs %g MS/s\n' ...
+            'bandwidth %g kHz\n' ...
+            '%g kchip/s (M %d), IF +%g kHz\n' ...
             'N 256 matched, CP 16, Nsym 48\n' ...
             '221 data bins/sym, 16-QAM\n' ...
             'bits/frame %d (84x84 px)\n' ...
             'ZC roots: OFDM u=25, AFDM u=34\n' ...
             'scrambler seed 46\n' ...
             'image %s\n' ...
-            'burst %g samples (%.0f ms)\n' ...
+            'burst %g samples (%.1f ms)\n' ...
             'radio %s'], ...
-            P.fc/1e9, fs/1e6, fs/M/1e3, M, fOff/1e3, numel(C.bits), ...
-            C.imgFile, Lbuf, 1e3*Lbuf/fs, devStr(dev, R, P)));
+            P.fc/1e9, fs/1e6, bwF*fs/1e3, fs/M/1e3, M, fOff/1e3, ...
+            numel(C.bits), C.imgFile, Lbuf, 1e3*Lbuf/fs, devStr(dev, R, P)));
         itS = toc(itTic) / max(u - max(u-5,0), 1);  itTic = tic;
     end
     drawnow limitrate;                            % also runs the callbacks
@@ -213,11 +234,10 @@ end
 
 %% ================= T-D: CLEANUP =========================================
 if ~isempty(tx), release(tx); end
-gEnd = P.txGain;
-if ishandle(fig), gEnd = getappdata(fig,'txGain'); end
+gEnd = gT;                                    % last gain applied
 fprintf('[TX] stopped after %d burst pairs (txGain %.1f)\n', u, gEnd);
 ip = '';  if ~isempty(dev), ip = dev.IPAddress; end
-out = struct('iters',u, 'txGain',gEnd, 'ipAddress',ip);
+out = struct('iters',u, 'txGain',gEnd, 'fs',fs, 'rf',P.rf, 'ipAddress',ip);
 if P.snapshot && ishandle(fig)
     fdir = fullfile(fileparts(mfilename('fullpath')), 'figures');
     if ~exist(fdir, 'dir'), mkdir(fdir); end
@@ -238,7 +258,7 @@ try
     tx = comm.SDRuTransmitter('Platform',dev.Platform, ...
         'IPAddress',dev.IPAddress,'CenterFrequency',P.fc, ...
         'MasterClockRate',R.mcr,'InterpolationFactor',R.mcr/fs, ...
-        'Gain',g,'ChannelMapping',P.channel);
+        'Gain',g,'ChannelMapping',find(strcmp(R.rfNames, P.rf)));
     tx(warm);                                        % warm-up (radio ramp)
 catch e
     if ~isempty(tx), try release(tx); catch, end, end
@@ -248,20 +268,36 @@ catch e
     return;
 end
 setappdata(fig,'usrpIP',dev.IPAddress);
-ui.setStatus(sprintf('connected: %s', devStr(dev, R, P)), 'ok');
-fprintf('[TX] connected: %s\n', devStr(dev, R, P));
+ui.setStatus(sprintf('connected: %s, %g MS/s', devStr(dev, R, P), fs/1e6), 'ok');
+fprintf('[TX] connected: %s, %g MS/s\n', devStr(dev, R, P), fs/1e6);
+end
+
+function [bufs, Lbuf, fOff] = makeBufs(C, fs)
+% contract frames -> radio buffers at sample rate fs: IF +0.24 fs, 5 ms of
+% silence on both sides, both bursts padded to one length. The frames are
+% defined in samples, so only the IF (in Hz) and the silence change with fs.
+fOff = 0.24 * fs;
+nRF  = @(x) x .* exp(1j*2*pi*fOff*(0:numel(x)-1).'/fs);
+lead = zeros(round(0.005*fs), 1);
+mkB  = @(x) [lead; nRF(x); lead];
+Lbuf = max(numel(mkB(C.xO)), numel(mkB(C.xA)));
+padz = @(x) [x; zeros(Lbuf - numel(x), 1)];
+bufs = {padz(mkB(C.xO)), padz(mkB(C.xA))};
 end
 
 function s = devStr(dev, R, P)
 if isempty(dev), s = 'none'; return; end
 sn = dev.SerialNum;  if isempty(sn), sn = '-'; end
-s = sprintf('%s %s SN %s, %s slot %s', dev.Platform, dev.IPAddress, sn, ...
-    R.dboard, char('A' + P.channel - 1));
+s = sprintf('%s %s SN %s, %s %s', dev.Platform, dev.IPAddress, sn, ...
+    R.dboard, P.rf);
 end
 
-function updSpec(hSp, bufPair, fs)
+function showRate(axSp, hSp, bufPair, fs, fOff)
 for w = 1:2
     [pp, ff] = pwelch(bufPair{w}, hann(1024), 512, 4096, fs, 'centered');
     set(hSp(w), 'XData', ff/1e3, 'YData', 10*log10(pp));
 end
+xlim(axSp, [-1 1]*fs/2e3);
+title(axSp, sprintf('TX baseband spectra (as sent, IF +%g kHz)', fOff/1e3), ...
+    'FontSize', 10);
 end
